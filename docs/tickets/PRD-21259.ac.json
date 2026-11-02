@@ -1,0 +1,150 @@
+[
+  {
+    "id": "TC1",
+    "ac": "AC1",
+    "text": "Given a mocked GET /api/v1/monitor/search response with 2 monitors, When datadog_search_monitors is called with no filter, Then the tool returns both monitors' summaries plus page/per_page/has_more",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_search_monitors_returns_paged_summaries"]
+  },
+  {
+    "id": "TC2",
+    "ac": "AC1",
+    "text": "Given per_page requested above 100, When datadog_search_monitors is called, Then the service caps the upstream request at 100",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_search_monitors_caps_per_page_at_100"]
+  },
+  {
+    "id": "TC3",
+    "ac": "AC2",
+    "text": "Given a mocked 200 for a known monitor_id, When datadog_get_monitor is called, Then the full monitor detail is returned",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_get_monitor_returns_full_detail"]
+  },
+  {
+    "id": "TC4",
+    "ac": "AC2",
+    "text": "Given a mocked 404 for an unknown monitor_id, When datadog_get_monitor is called, Then the tool returns the not_found error envelope, not an exception",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_get_monitor_maps_404_to_not_found"]
+  },
+  {
+    "id": "TC5",
+    "ac": "AC3",
+    "text": "Given a mocked 200 from POST .../mute, When datadog_mute_monitor is called with a scope and end time, Then the response confirms the muted state with that scope and end time",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_mute_monitor_confirms_muted_state"]
+  },
+  {
+    "id": "TC6",
+    "ac": "AC3",
+    "text": "Given a muted monitor, When datadog_unmute_monitor is called, Then the response confirms the monitor is no longer muted",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_unmute_monitor_confirms_active_state"]
+  },
+  {
+    "id": "TC7",
+    "ac": "AC4",
+    "text": "Given a mocked logs search response with matches, When datadog_search_logs is called with a query and time range, Then matching entries and a cursor (when more exist) are returned",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_search_logs_returns_entries_and_cursor"]
+  },
+  {
+    "id": "TC8",
+    "ac": "AC4",
+    "text": "Given a mocked logs search response with zero matches, When datadog_search_logs is called, Then the tool returns an empty result set, not a not_found error",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_search_logs_empty_result_is_not_an_error"]
+  },
+  {
+    "id": "TC9",
+    "ac": "AC5",
+    "text": "Given a mocked GET /api/v1/query response with points, When datadog_query_metrics is called with a valid query string and time range, Then the timeseries points are returned",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_query_metrics_returns_timeseries_points"]
+  },
+  {
+    "id": "TC10",
+    "ac": "AC5",
+    "text": "Given a mocked 400 for an invalid metric query string, When datadog_query_metrics is called, Then the tool returns the invalid_argument error envelope",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_query_metrics_maps_400_to_invalid_argument"]
+  },
+  {
+    "id": "TC11",
+    "ac": "AC6",
+    "text": "Given a mocked GET /api/v1/metrics response with more names than the cap, When datadog_list_active_metrics is called, Then the response is truncated to the cap with has_more=true",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_list_active_metrics_truncates_with_has_more"]
+  },
+  {
+    "id": "TC12",
+    "ac": "AC6",
+    "text": "Given a prefix filter, When datadog_list_active_metrics is called, Then only metric names starting with that prefix are returned",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_list_active_metrics_prefix_filter"]
+  },
+  {
+    "id": "TC13",
+    "ac": "AC7",
+    "text": "Given a mocked events search response with zero matches, When datadog_search_events is called, Then the tool returns an empty result set, not a not_found error",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_search_events_empty_result_is_not_an_error"]
+  },
+  {
+    "id": "TC14",
+    "ac": "AC8",
+    "text": "Given a request missing X-Datadog-Application-Key, When any tool is called, Then the service returns HTTP 401 listing the missing header name, and no request reaches the Datadog API",
+    "type": "auto",
+    "tests": ["tests/test_middleware.py::test_missing_required_header_returns_401_with_header_name"]
+  },
+  {
+    "id": "TC15",
+    "ac": "AC9",
+    "text": "Given two concurrent requests carrying two different tenants' credentials, When both call a tool at the same time, Then each response's upstream call used only its own request's credentials, never the other tenant's",
+    "type": "auto",
+    "tests": ["tests/test_middleware.py::test_concurrent_requests_do_not_leak_credentials"]
+  },
+  {
+    "id": "TC16",
+    "ac": "AC10",
+    "text": "Given X-Datadog-Site: datadoghq.eu, When any tool is called, Then the outbound request targets https://api.datadoghq.eu, not the US1 default",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_site_header_selects_eu_base_url"]
+  },
+  {
+    "id": "TC17",
+    "ac": "AC10",
+    "text": "Given no X-Datadog-Site header, When any tool is called, Then the outbound request targets https://api.datadoghq.com",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_missing_site_header_defaults_to_us1"]
+  },
+  {
+    "id": "TC18",
+    "ac": "AC11",
+    "text": "Given a mocked 429 response followed by a 200, When a tool call hits the 429, Then the service retries with backoff and returns the eventual successful result",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_rate_limited_response_is_retried"]
+  },
+  {
+    "id": "TC19",
+    "ac": "AC11",
+    "text": "Given a mocked 503 on every retry attempt, When a tool call exhausts its retries, Then the service returns the upstream_error envelope with retryable: true",
+    "type": "auto",
+    "tests": ["tests/test_tools.py::test_exhausted_retries_return_upstream_error"]
+  },
+  {
+    "id": "TC20",
+    "ac": "AC1",
+    "type": "manual",
+    "source": "dev",
+    "text": "Given a real Datadog account's credentials, When each of the 8 tools is called via initialize -> tools/list -> tools/call against the live API, Then each returns a well-formed response matching its documented shape",
+    "steps": [
+      "Obtain a real Datadog API key + Application key (any site)",
+      "Run the service locally with those headers set",
+      "Call initialize, then tools/list, then tools/call for each of the 8 tools with representative arguments"
+    ],
+    "expect": "Each tool call returns a well-formed JSON result matching the shape documented in Data & API contract; no tool returns a 500 or an unmapped exception",
+    "result": "untested",
+    "evidence": "not executed -- no Datadog test/trial account available this round (see Risks & dependencies); needs a real vendor account"
+  }
+]
