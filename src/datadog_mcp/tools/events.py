@@ -41,7 +41,7 @@ def register(mcp: FastMCP, client_factory) -> None:
         """
         capped_limit = min(limit, MAX_LIMIT)
         try:
-            client: DatadogClient = client_factory()
+            client: DatadogClient = client_factory("datadog_search_events")
         except InvalidSiteError as exc:
             return ToolError(code="invalid_argument", message=str(exc), retryable=False).to_json()
 

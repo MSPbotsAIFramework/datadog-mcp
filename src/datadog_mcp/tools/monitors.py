@@ -45,7 +45,7 @@ def register(mcp: FastMCP, client_factory) -> None:
         """
         capped_per_page = min(per_page, MAX_PER_PAGE)
         try:
-            client: DatadogClient = client_factory()
+            client: DatadogClient = client_factory("datadog_search_monitors")
         except InvalidSiteError as exc:
             return ToolError(code="invalid_argument", message=str(exc), retryable=False).to_json()
         async with client:
@@ -71,7 +71,7 @@ def register(mcp: FastMCP, client_factory) -> None:
         Args: monitor_id - the Datadog monitor id.
         """
         try:
-            client: DatadogClient = client_factory()
+            client: DatadogClient = client_factory("datadog_get_monitor")
         except InvalidSiteError as exc:
             return ToolError(code="invalid_argument", message=str(exc), retryable=False).to_json()
         async with client:
@@ -98,7 +98,7 @@ def register(mcp: FastMCP, client_factory) -> None:
         if end is not None:
             payload["end"] = end
         try:
-            client: DatadogClient = client_factory()
+            client: DatadogClient = client_factory("datadog_mute_monitor")
         except InvalidSiteError as exc:
             return ToolError(code="invalid_argument", message=str(exc), retryable=False).to_json()
         async with client:
@@ -127,7 +127,7 @@ def register(mcp: FastMCP, client_factory) -> None:
         if scope:
             payload["scope"] = scope
         try:
-            client: DatadogClient = client_factory()
+            client: DatadogClient = client_factory("datadog_unmute_monitor")
         except InvalidSiteError as exc:
             return ToolError(code="invalid_argument", message=str(exc), retryable=False).to_json()
         async with client:

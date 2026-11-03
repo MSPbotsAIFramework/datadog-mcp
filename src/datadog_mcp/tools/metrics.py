@@ -32,7 +32,7 @@ def register(mcp: FastMCP, client_factory) -> None:
         Args: query - a Datadog metric query string. time_from/time_to - Unix epoch seconds.
         """
         try:
-            client: DatadogClient = client_factory()
+            client: DatadogClient = client_factory("datadog_query_metrics")
         except InvalidSiteError as exc:
             return ToolError(code="invalid_argument", message=str(exc), retryable=False).to_json()
 
@@ -66,7 +66,7 @@ def register(mcp: FastMCP, client_factory) -> None:
         """
         capped_limit = min(limit, MAX_LIMIT)
         try:
-            client: DatadogClient = client_factory()
+            client: DatadogClient = client_factory("datadog_list_active_metrics")
         except InvalidSiteError as exc:
             return ToolError(code="invalid_argument", message=str(exc), retryable=False).to_json()
 

@@ -29,6 +29,7 @@ from starlette.routing import Mount, Route
 
 from datadog_mcp.config import settings
 from datadog_mcp.api_client import DatadogClient
+from datadog_mcp.logging_utils import configure_logging, new_request_id, reset_request_id, set_request_id
 
 API_KEY_HEADER = "X-Datadog-Api-Key"
 APPLICATION_KEY_HEADER = "X-Datadog-Application-Key"
@@ -69,14 +70,19 @@ def current_credentials() -> RequestCredentials:
     return _credentials.get()
 
 
-def client_factory() -> DatadogClient:
+def client_factory(tool_name: str) -> DatadogClient:
     """Build a fresh, request-scoped Datadog client from the current ContextVar.
 
     A new client is built on every call -- nothing here is cached across
-    requests (vendor-mcp-development-sop.md section 3.4).
+    requests (vendor-mcp-development-sop.md section 3.4). `tool_name` is the
+    calling tool's own name, carried through to every structured log line
+    api_client.py emits for the calls this client makes (SOP section 6) --
+    it is not credential or request data.
     """
     creds = current_credentials()
-    return DatadogClient(api_key=creds.api_key, application_key=creds.application_key, site=creds.site)
+    return DatadogClient(
+        api_key=creds.api_key, application_key=creds.application_key, site=creds.site, tool_name=tool_name
+    )
 
 
 class CredentialsMiddleware:
@@ -120,9 +126,14 @@ class CredentialsMiddleware:
                 site=headers.get(SITE_HEADER),
             )
         )
+        # One request id per HTTP request, carried via ContextVar into every
+        # structured log line api_client.py emits for calls made while
+        # handling it (SOP section 6) -- never derived from header values.
+        request_id_token = set_request_id(new_request_id())
         try:
             await self.app(scope, receive, send)
         finally:
+            reset_request_id(request_id_token)
             _credentials.reset(token)
 
 
@@ -152,6 +163,7 @@ async def health(_request) -> JSONResponse:
 
 
 def build_app() -> Starlette:
+    configure_logging()
     mcp = build_mcp()
     mcp_asgi_app = mcp.streamable_http_app()  # creates mcp.session_manager as a side effect
 

@@ -8,11 +8,13 @@ module-level singleton (SOP section 3.1 / 3.3).
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import httpx
 
-from datadog_mcp.errors import INVALID_ARGUMENT, ToolError, UpstreamError
+from datadog_mcp.errors import INVALID_ARGUMENT, UPSTREAM_ERROR, ToolError, UpstreamError, from_status_code
+from datadog_mcp.logging_utils import log_upstream_call
 
 # Site -> API base URL (https://docs.datadoghq.com/getting_started/site/).
 SITE_BASE_URLS: dict[str, str] = {
@@ -31,6 +33,12 @@ _READ_TIMEOUT = 30.0
 _MAX_RETRIES = 3
 _RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 _BACKOFF_BASE_SECONDS = 0.5
+# SOP section 5: a single tool call, including every retry and backoff sleep,
+# must stay under 120s. _READ_TIMEOUT * (_MAX_RETRIES + 1) + backoff alone can
+# exceed that (review round 1, finding 1), so request() enforces this ceiling
+# directly against the clock instead of relying on those constants' arithmetic
+# staying under 120s by coincidence.
+_MAX_TOTAL_SECONDS = 100.0
 
 
 class InvalidSiteError(Exception):
@@ -55,7 +63,10 @@ def resolve_base_url(site: str | None) -> str:
 class DatadogClient:
     """Per-request Datadog API client. Not shared across requests."""
 
-    def __init__(self, api_key: str, application_key: str, site: str | None = None) -> None:
+    def __init__(
+        self, api_key: str, application_key: str, site: str | None = None, *, tool_name: str = ""
+    ) -> None:
+        self._tool_name = tool_name
         self._base_url = resolve_base_url(site)
         self._headers = {
             "DD-API-KEY": api_key,
@@ -85,36 +96,71 @@ class DatadogClient:
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Issue one request with bounded retry on 429/5xx, honoring Retry-After."""
+        """Issue one request with bounded retry on 429/5xx, honoring Retry-After.
+
+        Every attempt -- plus the backoff sleep before it, plus the sleep
+        waiting on it -- is bounded against a single wall-clock deadline
+        (_MAX_TOTAL_SECONDS), so the whole call can never reach the SOP's
+        120s ceiling regardless of how many attempts or how slow upstream is.
+        """
+        start = time.monotonic()
         last_exc: Exception | None = None
-        for attempt in range(_MAX_RETRIES + 1):
-            try:
-                response = await self._client.request(method, path, params=params, json=json_body)
-            except httpx.TimeoutException as exc:
-                last_exc = exc
-                if attempt >= _MAX_RETRIES:
-                    raise UpstreamError(599, f"Timeout calling Datadog API: {exc}") from exc
-                await asyncio.sleep(_BACKOFF_BASE_SECONDS * (2**attempt))
-                continue
-            except httpx.HTTPError as exc:
-                raise UpstreamError(599, f"Network error calling Datadog API: {exc}") from exc
+        status_code: int | None = None
+        error_code: str | None = None
+        try:
+            for attempt in range(_MAX_RETRIES + 1):
+                remaining = _MAX_TOTAL_SECONDS - (time.monotonic() - start)
+                if remaining <= 0:
+                    error_code = UPSTREAM_ERROR
+                    raise UpstreamError(599, "Datadog API call aborted: retry time budget exhausted")
+                try:
+                    response = await asyncio.wait_for(
+                        self._client.request(method, path, params=params, json=json_body),
+                        timeout=remaining,
+                    )
+                except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+                    last_exc = exc
+                    remaining = _MAX_TOTAL_SECONDS - (time.monotonic() - start)
+                    if attempt >= _MAX_RETRIES or remaining <= 0:
+                        error_code = UPSTREAM_ERROR
+                        raise UpstreamError(599, f"Timeout calling Datadog API: {exc}") from exc
+                    await asyncio.sleep(min(_BACKOFF_BASE_SECONDS * (2**attempt), remaining))
+                    continue
+                except httpx.HTTPError as exc:
+                    error_code = UPSTREAM_ERROR
+                    raise UpstreamError(599, f"Network error calling Datadog API: {exc}") from exc
 
-            if response.status_code < 400:
-                if not response.content:
-                    return {}
-                return response.json()
+                status_code = response.status_code
+                if status_code < 400:
+                    if not response.content:
+                        return {}
+                    return response.json()
 
-            if response.status_code in _RETRY_STATUS_CODES and attempt < _MAX_RETRIES:
-                delay = _retry_delay(response, attempt)
-                await asyncio.sleep(delay)
-                continue
+                if status_code in _RETRY_STATUS_CODES and attempt < _MAX_RETRIES:
+                    remaining = _MAX_TOTAL_SECONDS - (time.monotonic() - start)
+                    if remaining <= 0:
+                        error_code = from_status_code(status_code, "").code
+                        raise UpstreamError(status_code, _safe_error_message(response))
+                    await asyncio.sleep(min(_retry_delay(response, attempt), remaining))
+                    continue
 
-            raise UpstreamError(response.status_code, _safe_error_message(response))
+                error_code = from_status_code(status_code, "").code
+                raise UpstreamError(status_code, _safe_error_message(response))
 
-        # Unreachable, but keeps type-checkers happy.
-        if last_exc is not None:
-            raise UpstreamError(599, str(last_exc))
-        raise UpstreamError(599, "Datadog API call failed with no response")
+            # Unreachable, but keeps type-checkers happy.
+            error_code = UPSTREAM_ERROR
+            if last_exc is not None:
+                raise UpstreamError(599, str(last_exc))
+            raise UpstreamError(599, "Datadog API call failed with no response")
+        finally:
+            log_upstream_call(
+                tool=self._tool_name,
+                method=method,
+                path=path,
+                status_code=status_code,
+                latency_ms=(time.monotonic() - start) * 1000,
+                error_code=error_code,
+            )
 
 
 def _retry_delay(response: httpx.Response, attempt: int) -> float:

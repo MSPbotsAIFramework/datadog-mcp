@@ -6,14 +6,19 @@ All Datadog HTTP calls are mocked -- these tests never touch the network
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import time
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import datadog_mcp.api_client as api_client_module
 from datadog_mcp.api_client import DatadogClient, resolve_base_url
 from datadog_mcp.errors import UpstreamError
+from datadog_mcp.logging_utils import logger as datadog_logger, reset_request_id, set_request_id
 from datadog_mcp.server import RequestCredentials, _credentials, build_mcp
 
 EXPECTED_TOOLS = {
@@ -261,3 +266,99 @@ async def test_exhausted_retries_return_upstream_error() -> None:
         await client.aclose()
 
     assert excinfo.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_retry_loop_stops_once_time_budget_is_exhausted(monkeypatch) -> None:
+    """Review round 1, finding 1: a transport that never responds must not be
+    retried past the cumulative time budget, regardless of _MAX_RETRIES /
+    _READ_TIMEOUT -- the whole call must stay well under the SOP's 120s
+    per-call ceiling (vendor-mcp-development-sop.md section 5)."""
+    monkeypatch.setattr(api_client_module, "_MAX_TOTAL_SECONDS", 0.3)
+
+    async def never_returns(method, url, params=None, json=None):
+        await asyncio.sleep(10)  # would hang well past 120s without the cap below
+
+    client = DatadogClient(api_key="k", application_key="a")
+    client._client.request = never_returns
+    start = time.monotonic()
+    try:
+        with pytest.raises(UpstreamError) as excinfo:
+            await client.request("GET", "/api/v1/monitor/search")
+    finally:
+        await client.aclose()
+    elapsed = time.monotonic() - start
+
+    assert excinfo.value.status_code == 599
+    assert elapsed < 2.0, f"retry loop ran {elapsed:.1f}s past its 0.3s budget"
+
+
+@pytest.mark.asyncio
+async def test_upstream_call_emits_one_structured_log_line_without_credentials() -> None:
+    """Review round 1, finding 2: every upstream call must log tool name,
+    request id, upstream path, status code, latency and error code (SOP
+    section 6) -- and never the credential header values."""
+
+    captured: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    handler = _Collect()
+    datadog_logger.addHandler(handler)
+    token = set_request_id("rid-test-1")
+    try:
+        client = DatadogClient(
+            api_key="secret-key", application_key="secret-app-key", tool_name="datadog_get_monitor"
+        )
+        client._client.request = AsyncMock(return_value=_FakeResponse(200, {"id": 1}))
+        try:
+            await client.request("GET", "/api/v1/monitor/1")
+        finally:
+            await client.aclose()
+    finally:
+        reset_request_id(token)
+        datadog_logger.removeHandler(handler)
+
+    assert len(captured) == 1
+    record = captured[0]
+    assert record.tool == "datadog_get_monitor"
+    assert record.request_id == "rid-test-1"
+    assert record.path == "/api/v1/monitor/1"
+    assert record.status_code == 200
+    assert record.error_code is None
+    assert record.latency_ms >= 0
+    rendered = record.getMessage()
+    assert "secret-key" not in rendered
+    assert "secret-app-key" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_upstream_call_log_line_records_mapped_error_code_on_failure() -> None:
+    captured: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    handler = _Collect()
+    datadog_logger.addHandler(handler)
+    try:
+
+        async def fake_request(method, url, params=None, json=None):
+            return _FakeResponse(404, {"errors": ["not found"]})
+
+        client = DatadogClient(api_key="k", application_key="a", tool_name="datadog_get_monitor")
+        client._client.request = fake_request
+        try:
+            with pytest.raises(UpstreamError):
+                await client.request("GET", "/api/v1/monitor/999")
+        finally:
+            await client.aclose()
+    finally:
+        datadog_logger.removeHandler(handler)
+
+    assert len(captured) == 1
+    assert captured[0].status_code == 404
+    assert captured[0].error_code == "not_found"
