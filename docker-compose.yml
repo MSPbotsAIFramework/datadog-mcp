@@ -1,0 +1,12 @@
+# Local debug only -- the deployed service never uses this file.
+services:
+  datadog-mcp:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: 8080
+    # Credentials are never set here -- they are sent per-request as headers
+    # by the caller (curl, an MCP client, or the gateway), never baked into
+    # the container's environment.
