@@ -44,3 +44,33 @@ Only the two must-fix items below were touched; nothing else in the diff. Sugges
 - Smoke: `GET /health` -> 200 `{"status": "ok"}`; `POST /mcp` with missing credential headers -> 401 with the same error envelope as round 1 (unchanged code path). Full `tools/list` contract already covered by the unchanged `test_tools_list_snapshot` test, which passed.
 
 Not changed: `docs/tickets/PRD-21259.md` (frozen main doc) is untouched per the review-rework rule -- this Fixes section is the record of what changed.
+
+## Round 2 · 2026-11-03 · reviewed dev/PRD-21259 @ a927da1 (base main @ 0ab3ff3, unmoved since round 1)
+
+Verdict: approved
+
+### Scope
+
+`git diff 5364a29...a927da1` (the round 1 fix commit `a6e4931` plus the round 1 Fixes-section doc commit `a927da1`) -- 9 files, +321/-42: `src/datadog_mcp/api_client.py`, new `src/datadog_mcp/logging_utils.py`, `src/datadog_mcp/server.py`, all 8 `client_factory()` call sites across `tools/{events,logs,metrics,monitors}.py`, `tests/test_tools.py`, and this review doc. No touch to the frozen `docs/tickets/PRD-21259.md`, `PRD-21259.ac.json`, or `README.md` -- correct, this round is a pure fix of the two round 1 must-fix items, not a scope or contract change.
+
+### Verification of round 1 fixes
+
+1. **Must-fix 1 (retry budget).** `api_client.py` now tracks a cumulative wall-clock deadline (`_MAX_TOTAL_SECONDS = 100.0`): before every attempt and before every backoff/retry sleep it recomputes `remaining` and raises `UpstreamError(599, ...)` immediately once `remaining <= 0`, and wraps the network call itself in `asyncio.wait_for(..., timeout=remaining)` so a hung upstream is cancelled rather than consuming a full 30s read timeout regardless of budget left. Traced every exit path (success, timeout/`asyncio.TimeoutError`, retryable status, non-retryable status, retries exhausted) -- all either return/raise before the 100s ceiling or raise the new `599` budget-exhausted error, so the worst case is bounded at ~100s + negligible scheduling overhead, comfortably under the SOP's 120s per-call ceiling (vendor-mcp-development-sop.md §5). New regression test `test_retry_loop_stops_once_time_budget_is_exhausted` reproduces independently: monkeypatches `_MAX_TOTAL_SECONDS = 0.3` against a transport that sleeps 10s on every call, asserts `UpstreamError(599)` and `elapsed < 2.0`. **Confirmed fixed.**
+2. **Must-fix 2 (structured logging).** New `logging_utils.py` (`configure_logging`, request-id `ContextVar`, `log_upstream_call`) is wired from `server.build_app()` (idempotent `configure_logging()` call) and `CredentialsMiddleware` (one `request_id` per HTTP request, set/reset in the same `try/finally` that already resets the credentials `ContextVar` -- never derived from header values). `api_client.DatadogClient.request()` logs exactly once per call, in a `finally` covering the whole retry loop, with tool name, request id, method, path, status code, latency (ms), and the already-classified error `code` -- never the raw exception message, header values, or response body. All 8 `client_factory()` call sites (across `events.py`, `logs.py`, `metrics.py` x2, `monitors.py` x4) now pass their own tool name; checked each one individually, none missed. Two new regression tests confirm: one asserts a successful call logs exactly one record with the right fields and that the rendered message never contains the test's (deliberately distinctive) credential values; the other asserts a 404 logs `status_code=404, error_code="not_found"`. **Confirmed fixed.**
+
+### What was verified and passed (reproduced independently on a927da1)
+
+- `uv sync && uv run pytest -q`: **25 passed, 0 failed** (22 from round 1 + the 3 new tests above).
+- CJK scan (`grep -rnP '[\x{4e00}-\x{9fff}]' --exclude-dir=.git --exclude-dir=.venv .`): only the 2 pre-existing hits in this review doc itself (quoting the Chinese-language SOP text as round 1 finding evidence) -- same 2 hits as at round 1's reviewed sha `5364a29` (`git show 5364a29:docs/tickets/PRD-21259-review.md`), not introduced by this round. `src/`, `tests/`, `README.md` clean.
+- `src/datadog_mcp/errors.py` has both `UPSTREAM_ERROR` and `from_status_code` that `api_client.py` newly imports -- no missing-symbol risk.
+- Credential values (`"secret-key"`, `"secret-app-key"`) used in the new logging test are asserted absent from the rendered log message -- the new logging path does not leak credentials, consistent with SOP §3/§6.
+
+### Suggestions carried over (unchanged, still not blocking)
+
+1. `docs/tickets/PRD-21259.ac.json:135-149` -- TC20's `"ac"` field says `"AC1"` but the prose says it covers AC1-AC11 (round 1 suggestion 3). Left as-is this round; still not functionally significant.
+
+### Findings
+
+None. Both round 1 must-fix items are confirmed fixed; no new must-fix found in this round's diff.
+
+Status: frozen @ a927da1
